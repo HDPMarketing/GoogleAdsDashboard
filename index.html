@@ -1,592 +1,1186 @@
-// Hi-Desert Plumbing Marketing Performance Automation
-// Auto-configured for your Google Sheets and Drive folder
-
-const SPREADSHEET_ID = '1BsAd-0ApnbY15-zlT8T-N844KpOlC6OT01TuKVNXXMo';
-const FOLDER_ID = '1Qq9JoNtMyvdsts4ZUbyBPgOF_kJJOJyM';
-const YOUR_EMAIL = 'your-email@example.com'; // UPDATE THIS WITH YOUR EMAIL
-
-function onInstall() {
-  // Set up folder monitoring trigger
-  setupFolderTrigger();
-  console.log('Hi-Desert Plumbing Marketing Automation installed successfully!');
-}
-
-function setupFolderTrigger() {
-  // Delete existing triggers
-  ScriptApp.getProjectTriggers().forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'checkForNewFiles') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-  
-  // Create hourly trigger to check for new PDFs
-  ScriptApp.newTrigger('checkForNewFiles')
-    .timeBased()
-    .everyHours(1)
-    .create();
-}
-
-function checkForNewFiles() {
-  try {
-    const folder = DriveApp.getFolderById(FOLDER_ID);
-    const files = folder.getFiles();
-    
-    while (files.hasNext()) {
-      const file = files.next();
-      if (file.getMimeType() === 'application/pdf' && !isFileProcessed(file.getId())) {
-        console.log(`Processing new PDF: ${file.getName()}`);
-        processMarketingReport(file);
-        markFileAsProcessed(file.getId());
-      }
-    }
-  } catch (error) {
-    console.error('Error checking for files:', error);
-    sendNotification('Error checking for new marketing reports', error.toString());
-  }
-}
-
-function processMarketingReport(file) {
-  try {
-    // Simpler approach: Create a temporary Google Doc to extract text
-    const blob = file.getBlob();
-    
-    // Create temporary folder for processing if it doesn't exist
-    let tempFolder;
-    try {
-      tempFolder = DriveApp.getFolderById(FOLDER_ID).getFoldersByName('_temp_processing').next();
-    } catch (e) {
-      tempFolder = DriveApp.getFolderById(FOLDER_ID).createFolder('_temp_processing');
-    }
-    
-    // Create temporary Google Doc from PDF
-    const tempDoc = DriveApp.createFile(blob).moveTo(tempFolder);
-    
-    // Try to get text content - this is a simplified approach
-    let text = '';
-    try {
-      // For now, let's create a manual text extraction approach
-      console.log('PDF detected:', file.getName());
-      text = `MANUAL_EXTRACTION_NEEDED_${file.getName()}`;
-    } catch (textError) {
-      console.log('Text extraction issue:', textError);
-      text = `ERROR_EXTRACTING_${file.getName()}`;
-    }
-    
-    // Clean up temporary file
-    tempDoc.setTrashed(true);
-    
-    // Extract marketing data
-    const marketingData = extractMarketingMetrics(text, file.getName());
-    
-    if (marketingData) {
-      updateSpreadsheet(marketingData);
-      sendNotification('Marketing Report Processed Successfully', 
-        `Processed: ${file.getName()}\nMonth: ${marketingData.month}\nGoogle Ads Spend: $${marketingData.googleAdsSpend}`);
-    } else {
-      sendNotification('No Marketing Data Found', `Could not extract data from: ${file.getName()}`);
-    }
-    
-  } catch (error) {
-    console.error('Error processing file:', error);
-    sendNotification('Error Processing Marketing Report', `File: ${file.getName()}\nError: ${error.toString()}`);
-  }
-}
-
-function extractMarketingMetrics(text, fileName) {
-  console.log('Extracting metrics from:', fileName);
-  
-  // Determine month from filename or content
-  const month = extractMonth(fileName, text);
-  if (!month) {
-    console.log('Could not determine month from file');
-    return null;
-  }
-  
-  const data = {
-    month: month,
-    seoSessions: extractSEOSessions(text),
-    seoUsers: extractSEOUsers(text),
-    seoBounceRate: extractSEOBounceRate(text),
-    googleAdsSpend: extractGoogleAdsSpend(text),
-    googleAdsClicks: extractGoogleAdsClicks(text),
-    googleAdsConversions: extractGoogleAdsConversions(text),
-    googleAdsConversionRate: 0, // Will calculate
-    googleAdsCostPerConversion: 0, // Will calculate
-    lsaSpend: extractLSASpend(text),
-    lsaCalls: extractLSACalls(text),
-    lsaLeads: extractLSALeads(text),
-    lsaCostPerLead: 0, // Will calculate
-    gbpImpressions: extractGBPImpressions(text),
-    gbpCalls: extractGBPCalls(text),
-    lastUpdated: new Date().toISOString()
-  };
-  
-  // Calculate derived metrics
-  if (data.googleAdsSpend && data.googleAdsConversions && data.googleAdsConversions > 0) {
-    data.googleAdsCostPerConversion = (data.googleAdsSpend / data.googleAdsConversions).toFixed(2);
-  }
-  
-  if (data.googleAdsClicks && data.googleAdsConversions) {
-    data.googleAdsConversionRate = ((data.googleAdsConversions / data.googleAdsClicks) * 100).toFixed(2);
-  }
-  
-  if (data.lsaSpend && data.lsaLeads && data.lsaLeads > 0) {
-    data.lsaCostPerLead = (data.lsaSpend / data.lsaLeads).toFixed(2);
-  }
-  
-  data.totalSpend = (data.googleAdsSpend || 0) + (data.lsaSpend || 0);
-  data.totalLeadsConversions = (data.googleAdsConversions || 0) + (data.lsaLeads || 0);
-  
-  if (data.totalSpend && data.totalLeadsConversions && data.totalLeadsConversions > 0) {
-    data.overallCostPerLead = (data.totalSpend / data.totalLeadsConversions).toFixed(2);
-  }
-  
-  console.log('Extracted data:', data);
-  return data;
-}
-
-function extractMonth(fileName, text) {
-  // Try filename first
-  const monthRegex = /(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*(\d{4})?/i;
-  
-  let match = fileName.match(monthRegex);
-  if (match) {
-    return match[1] + (match[2] ? ' ' + match[2] : ' 2025');
-  }
-  
-  // Try text content
-  match = text.match(monthRegex);
-  if (match) {
-    return match[1] + (match[2] ? ' ' + match[2] : ' 2025');
-  }
-  
-  return null;
-}
-
-function extractGoogleAdsSpend(text) {
-  const patterns = [
-    /google\s*ads.*?cost[:\s]+\$?([\d,]+\.?\d*)/i,
-    /adwords.*?spend[:\s]+\$?([\d,]+\.?\d*)/i,
-    /google\s*ads.*?\$?([\d,]+\.?\d*)/i,
-    /ppc.*?spend[:\s]+\$?([\d,]+\.?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseFloat(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractGoogleAdsConversions(text) {
-  const patterns = [
-    /google\s*ads.*?conversions?[:\s]+(\d+)/i,
-    /adwords.*?conversions?[:\s]+(\d+)/i,
-    /ppc.*?conversions?[:\s]+(\d+)/i,
-    /conversions?[:\s]+(\d+)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1]);
-    }
-  }
-  return null;
-}
-
-function extractLSASpend(text) {
-  const patterns = [
-    /local\s*services?.*?ads?.*?\$?([\d,]+\.?\d*)/i,
-    /lsa.*?\$?([\d,]+\.?\d*)/i,
-    /local\s*services?.*?\$?([\d,]+\.?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseFloat(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractLSALeads(text) {
-  const patterns = [
-    /local\s*services?.*?leads?[:\s]+(\d+)/i,
-    /lsa.*?leads?[:\s]+(\d+)/i,
-    /local\s*services?.*?(\d+)\s*leads?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1]);
-    }
-  }
-  return null;
-}
-
-function extractGoogleAdsClicks(text) {
-  const patterns = [
-    /google\s*ads.*?clicks?[:\s]+(\d+,?\d*)/i,
-    /adwords.*?clicks?[:\s]+(\d+,?\d*)/i,
-    /ppc.*?clicks?[:\s]+(\d+,?\d*)/i,
-    /clicks?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractLSACalls(text) {
-  const patterns = [
-    /local\s*services?.*?calls?[:\s]+(\d+)/i,
-    /lsa.*?calls?[:\s]+(\d+)/i,
-    /local\s*services?.*?(\d+)\s*calls?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1]);
-    }
-  }
-  return null;
-}
-
-function extractGBPImpressions(text) {
-  const patterns = [
-    /business\s*profile.*?impressions?[:\s]+(\d+,?\d*)/i,
-    /gbp.*?impressions?[:\s]+(\d+,?\d*)/i,
-    /google.*?business.*?(\d+,?\d*)\s*impressions?/i,
-    /impressions?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-  const patterns = [
-    /local\s*services?.*?leads?[:\s]+(\d+)/i,
-    /lsa.*?leads?[:\s]+(\d+)/i,
-    /local\s*services?.*?(\d+)\s*leads?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1]);
-    }
-  }
-  return null;
-}
-
-function extractSEOSessions(text) {
-  const patterns = [
-    /sessions?[:\s]+(\d+,?\d*)/i,
-    /organic.*?sessions?[:\s]+(\d+,?\d*)/i,
-    /seo.*?sessions?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractSEOUsers(text) {
-  const patterns = [
-    /users?[:\s]+(\d+,?\d*)/i,
-    /organic.*?users?[:\s]+(\d+,?\d*)/i,
-    /seo.*?users?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractSEOBounceRate(text) {
-  const patterns = [
-    /bounce\s*rate[:\s]+([\d.]+)%?/i,
-    /organic.*?bounce[:\s]+([\d.]+)%?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseFloat(match[1]);
-    }
-  }
-  return null;
-}
-
-function extractGBPViews(text) {
-  const patterns = [
-    /business\s*profile.*?views?[:\s]+(\d+,?\d*)/i,
-    /gbp.*?views?[:\s]+(\d+,?\d*)/i,
-    /google.*?business.*?(\d+,?\d*)\s*views?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractGBPActions(text) {
-  const patterns = [
-    /business\s*profile.*?actions?[:\s]+(\d+,?\d*)/i,
-    /gbp.*?actions?[:\s]+(\d+,?\d*)/i,
-    /google.*?business.*?(\d+,?\d*)\s*actions?/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractGBPCalls(text) {
-  const patterns = [
-    /business\s*profile.*?calls?[:\s]+(\d+,?\d*)/i,
-    /gbp.*?calls?[:\s]+(\d+,?\d*)/i,
-    /phone.*?calls?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractGBPDirections(text) {
-  const patterns = [
-    /directions?[:\s]+(\d+,?\d*)/i,
-    /business\s*profile.*?directions?[:\s]+(\d+,?\d*)/i,
-    /gbp.*?directions?[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function extractGBPWebsiteClicks(text) {
-  const patterns = [
-    /website\s*clicks?[:\s]+(\d+,?\d*)/i,
-    /business\s*profile.*?website[:\s]+(\d+,?\d*)/i,
-    /gbp.*?website[:\s]+(\d+,?\d*)/i
-  ];
-  
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return parseInt(match[1].replace(/,/g, ''));
-    }
-  }
-  return null;
-}
-
-function updateSpreadsheet(data) {
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName('Monthly Data');
-  
-  if (!sheet) {
-    throw new Error('Monthly Data sheet not found');
-  }
-  
-  // Check if month already exists
-  const existingData = sheet.getDataRange().getValues();
-  let rowIndex = -1;
-  
-  for (let i = 1; i < existingData.length; i++) {
-    if (existingData[i][0] === data.month) {
-      rowIndex = i + 1; // +1 for 1-based indexing
-      break;
-    }
-  }
-  
-  // If month doesn't exist, add new row
-  if (rowIndex === -1) {
-    rowIndex = existingData.length + 1;
-  }
-  
-  // Update row with data using correct headers
-  const row = [
-    data.month,                           // Month
-    data.seoSessions || '',              // SEO Sessions
-    data.seoUsers || '',                 // SEO New Users
-    data.seoBounceRate || '',            // Bounce Rate %
-    data.googleAdsSpend || '',           // Google Ads Spend
-    data.googleAdsClicks || '',          // GA Clicks
-    data.googleAdsConversions || '',     // GA Conversions
-    data.googleAdsConversionRate || '',  // GA Conv Rate %
-    data.googleAdsCostPerConversion || '',// GA Cost/Conv
-    data.lsaSpend || '',                 // LSA Spend
-    data.lsaCalls || '',                 // LSA Calls
-    data.lsaLeads || '',                 // LSA Leads
-    data.lsaCostPerLead || '',           // LSA Cost/Lead
-    data.totalSpend || '',               // Total Spend
-    data.totalLeadsConversions || '',    // Total Conversions
-    data.overallCostPerLead || '',       // Overall Cost/Conv
-    data.gbpImpressions || '',           // GBP Impressions
-    data.gbpCalls || '',                 // GBP Calls
-    data.lastUpdated                     // Last Updated
-  ];
-  
-  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
-  console.log(`Updated row ${rowIndex} for ${data.month}`);
-}
-
-function isFileProcessed(fileId) {
-  try {
-    const properties = PropertiesService.getScriptProperties();
-    return properties.getProperty(`processed_${fileId}`) === 'true';
-  } catch (error) {
-    return false;
-  }
-}
-
-function markFileAsProcessed(fileId) {
-  const properties = PropertiesService.getScriptProperties();
-  properties.setProperty(`processed_${fileId}`, 'true');
-}
-
-function sendNotification(subject, body) {
-  if (YOUR_EMAIL && YOUR_EMAIL !== 'your-email@example.com') {
-    try {
-      MailApp.sendEmail({
-        to: YOUR_EMAIL,
-        subject: `Hi-Desert Plumbing Marketing: ${subject}`,
-        body: body
-      });
-    } catch (error) {
-      console.error('Failed to send notification:', error);
-    }
-  }
-}
-
-// Manual functions for testing
-function testProcessing() {
-  checkForNewFiles();
-}
-
-function debugProcessing() {
-  console.log('=== DEBUGGING PDF PROCESSING ===');
-  
-  try {
-    const folder = DriveApp.getFolderById(FOLDER_ID);
-    const files = folder.getFiles();
-    
-    let fileCount = 0;
-    while (files.hasNext()) {
-      const file = files.next();
-      fileCount++;
-      console.log(`File ${fileCount}: ${file.getName()} (${file.getMimeType()})`);
-      
-      if (file.getMimeType() === 'application/pdf') {
-        console.log(`Processing PDF: ${file.getName()}`);
-        
-        // Check if already processed
-        const isProcessed = isFileProcessed(file.getId());
-        console.log(`Already processed: ${isProcessed}`);
-        
-        if (!isProcessed) {
-          // Extract text and see what we get
-          debugPDFExtraction(file);
-        } else {
-          console.log('Skipping - already processed. Run resetProcessedFiles() to test again.');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hi-Desert Plumbing Marketing Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-      }
-    }
-    
-    if (fileCount === 0) {
-      console.log('❌ No files found in folder!');
-    }
-    
-  } catch (error) {
-    console.error('❌ Debug error:', error);
-  }
-}
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .tabs {
+            display: flex;
+            background: #f8f9fa;
+            border-bottom: 2px solid #dee2e6;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 15px 20px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border-bottom: 3px solid transparent;
+        }
+        
+        .tab:hover {
+            background: #e9ecef;
+        }
+        
+        .tab.active {
+            background: white;
+            border-bottom-color: #3498db;
+            color: #3498db;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .metric-card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            border: 1px solid #f1f3f4;
+            transition: transform 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+        
+        .metric-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .metric-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .metric-trend {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+        
+        .trend-up {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .trend-down {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .trend-neutral {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .metric-value {
+            font-size: 2.5em;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        
+        .metric-comparison {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+        }
+        
+        .comparison-item {
+            text-align: center;
+        }
+        
+        .comparison-label {
+            color: #888;
+            margin-bottom: 5px;
+        }
+        
+        .comparison-value {
+            font-weight: 600;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+        }
+        
+        .data-table th {
+            background: #3498db;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        .data-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #f1f3f4;
+        }
+        
+        .data-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .chart-container {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
+            margin: 20px 0;
+        }
+        
+        .chart-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2c3e50;
+        }
+        
+        .summary-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        
+        .summary-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .summary-item {
+            text-align: center;
+        }
+        
+        .summary-label {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+        
+        .summary-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+        }
+        
+        .btn-primary {
+            background: #3498db;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #2980b9;
+            transform: translateY(-2px);
+        }
+        
+        .btn-secondary {
+            background: #95a5a6;
+            color: white;
+        }
+        
+        .btn-secondary:hover {
+            background: #7f8c8d;
+        }
+        
+        .insights {
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .insights h3 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        
+        .insights ul {
+            list-style-position: inside;
+            color: #555;
+        }
+        
+        .insights li {
+            margin-bottom: 5px;
+        }
 
-function debugPDFExtraction(file) {
-  try {
-    console.log('--- Starting PDF text extraction ---');
-    
-    // Extract text from PDF using OCR
-    const blob = file.getBlob();
-    const resource = {
-      title: `DEBUG_${file.getName()}`,
-      parents: [FOLDER_ID]
-    };
-    
-    console.log('Converting PDF to Google Doc...');
-    const doc = Drive.Files.insert(resource, blob, {
-      convert: true,
-      ocr: true
-    });
-    
-    console.log('Reading extracted text...');
-    const docFile = DriveApp.getFileById(doc.id);
-    const text = DocumentApp.openById(doc.id).getBody().getText();
-    
-    console.log('--- EXTRACTED TEXT (first 500 chars) ---');
-    console.log(text.substring(0, 500));
-    console.log('--- END EXTRACTED TEXT ---');
-    
-    // Clean up temporary document
-    DriveApp.getFileById(doc.id).setTrashed(true);
-    
-    // Try to extract marketing data
-    console.log('--- Testing data extraction ---');
-    const marketingData = extractMarketingMetrics(text, file.getName());
-    console.log('Extracted marketing data:', marketingData);
-    
-    if (marketingData) {
-      console.log('✅ Data extracted successfully!');
-    } else {
-      console.log('❌ No marketing data found');
-    }
-    
-  } catch (error) {
-    console.error('❌ PDF extraction error:', error);
-  }
-}
+        .update-time {
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 20px;
+            padding: 10px;
+            border-top: 1px solid #eee;
+        }
 
-function resetProcessedFiles() {
-  const properties = PropertiesService.getScriptProperties();
-  properties.deleteAllProperties();
-  console.log('Reset all processed file markers');
-}
+        @media (max-width: 768px) {
+            .tabs {
+                flex-wrap: wrap;
+            }
+            
+            .tab {
+                flex: 1 1 50%;
+                min-width: 120px;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .action-buttons {
+                flex-direction: column;
+            }
+            
+            .data-table {
+                font-size: 14px;
+            }
+            
+            .data-table th, .data-table td {
+                padding: 10px 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Hi-Desert Plumbing</h1>
+            <p>Digital Marketing Performance Dashboard</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('overview')">Overview</button>
+            <button class="tab" onclick="showTab('seo')">SEO</button>
+            <button class="tab" onclick="showTab('google-ads')">Google Ads</button>
+            <button class="tab" onclick="showTab('local-services')">Local Services</button>
+            <button class="tab" onclick="showTab('trends')">Trends</button>
+        </div>
+        
+        <div id="overview" class="tab-content active">
+            <div class="summary-box">
+                <div class="summary-title">August 2025 MTD Performance vs July 2025</div>
+                <div class="summary-grid">
+                    <div class="summary-item">
+                        <div class="summary-label">Total Ad Spend</div>
+                        <div class="summary-value" id="totalSpendSummary">$3,453</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-label">Total Conversions</div>
+                        <div class="summary-value" id="totalConversionsSummary">46</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-label">Cost per Conversion</div>
+                        <div class="summary-value" id="costPerConvSummary">$75.07</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-label">Website Sessions</div>
+                        <div class="summary-value" id="sessionsSummary">--</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-title">Google Ads Spend</div>
+                        <div class="metric-trend trend-down" id="adsSpendTrend">-33.0%</div>
+                    </div>
+                    <div class="metric-value" id="adsSpendValue">$1,385</div>
+                    <div class="metric-comparison">
+                        <div class="comparison-item">
+                            <div class="comparison-label">Aug MTD</div>
+                            <div class="comparison-value">$1,385</div>
+                        </div>
+                        <div class="comparison-item">
+                            <div class="comparison-label">July Total</div>
+                            <div class="comparison-value">$2,068</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-title">Google Ads Conversions</div>
+                        <div class="metric-trend trend-down" id="adsConvTrend">-35.7%</div>
+                    </div>
+                    <div class="metric-value" id="adsConvValue">18</div>
+                    <div class="metric-comparison">
+                        <div class="comparison-item">
+                            <div class="comparison-label">Aug MTD</div>
+                            <div class="comparison-value">18</div>
+                        </div>
+                        <div class="comparison-item">
+                            <div class="comparison-label">July Total</div>
+                            <div class="comparison-value">28</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-title">Cost per Conversion</div>
+                        <div class="metric-trend trend-up" id="costTrend">+4.2%</div>
+                    </div>
+                    <div class="metric-value" id="costValue">$76.94</div>
+                    <div class="metric-comparison">
+                        <div class="comparison-item">
+                            <div class="comparison-label">Aug MTD</div>
+                            <div class="comparison-value">$76.94</div>
+                        </div>
+                        <div class="comparison-item">
+                            <div class="comparison-label">July Total</div>
+                            <div class="comparison-value">$73.86</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-title">Total Marketing ROI</div>
+                        <div class="metric-trend trend-neutral" id="roiTrend">Monitor</div>
+                    </div>
+                    <div class="metric-value" id="roiValue">--</div>
+                    <div class="metric-comparison">
+                        <div class="comparison-item">
+                            <div class="comparison-label">Revenue Tracking</div>
+                            <div class="comparison-value">Setup Needed</div>
+                        </div>
+                        <div class="comparison-item">
+                            <div class="comparison-label">Call Tracking</div>
+                            <div class="comparison-value">Recommended</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="insights">
+                <h3>Key Insights & Recommendations</h3>
+                <ul>
+                    <li><strong>Cost Efficiency Alert:</strong> Cost per conversion increased 4.2% from July to August MTD - review targeting and ad copy</li>
+                    <li><strong>Volume Concern:</strong> August conversions tracking 35.7% below July pace - consider budget reallocation</li>
+                    <li><strong>Data Gap:</strong> LSA and SEO data needed for complete performance picture</li>
+                    <li><strong>Next Steps:</strong> Implement call tracking and revenue attribution for full ROI analysis</li>
+                </ul>
+            </div>
+            
+            <div class="action-buttons">
+                <button class="btn btn-primary" onclick="refreshData()">Refresh Data</button>
+                <button class="btn btn-secondary" onclick="exportData()">Export to Excel</button>
+                <button class="btn btn-secondary" onclick="connectSheets()">Connect Live Data</button>
+            </div>
+        </div>
+        
+        <div id="seo" class="tab-content">
+            <h2>SEO Performance</h2>
+            
+            <div class="chart-container">
+                <div class="chart-title">Organic Search Performance</div>
+                <p>SEO data will be populated when PDF automation extracts organic traffic metrics from your marketing reports.</p>
+            </div>
+            
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>July 2025</th>
+                        <th>Aug 2025 MTD</th>
+                        <th>Change</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Sessions</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data Needed</td>
+                    </tr>
+                    <tr>
+                        <td>New Users</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data Needed</td>
+                    </tr>
+                    <tr>
+                        <td>Bounce Rate</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data Needed</td>
+                    </tr>
+                    <tr>
+                        <td>Avg Session Duration</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data Needed</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div class="insights">
+                <h3>SEO Optimization Opportunities</h3>
+                <ul>
+                    <li>Set up Google Analytics 4 integration for automated SEO reporting</li>
+                    <li>Track keyword rankings for "plumber Yucca Valley" and related terms</li>
+                    <li>Monitor local pack rankings for plumbing services</li>
+                    <li>Analyze page load speeds and Core Web Vitals</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div id="google-ads" class="tab-content">
+            <h2>Google Ads Performance</h2>
+            
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>July 2025</th>
+                        <th>Aug 2025 MTD</th>
+                        <th>Change</th>
+                        <th>Performance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Spend</td>
+                        <td>$2,068.00</td>
+                        <td>$1,385.00</td>
+                        <td style="color: #dc3545;">-33.0%</td>
+                        <td>Under budget</td>
+                    </tr>
+                    <tr>
+                        <td>Conversions</td>
+                        <td>28</td>
+                        <td>18</td>
+                        <td style="color: #dc3545;">-35.7%</td>
+                        <td>Below target</td>
+                    </tr>
+                    <tr>
+                        <td>Cost/Conversion</td>
+                        <td>$73.86</td>
+                        <td>$76.94</td>
+                        <td style="color: #dc3545;">+4.2%</td>
+                        <td>Needs optimization</td>
+                    </tr>
+                    <tr>
+                        <td>Impression Share</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Monitor needed</td>
+                    </tr>
+                    <tr>
+                        <td>Quality Score</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Audit recommended</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div class="insights">
+                <h3>Google Ads Optimization Opportunities</h3>
+                <ul>
+                    <li><strong>Budget Management:</strong> August tracking 33% below July spend - reallocate to high-performing keywords</li>
+                    <li><strong>Cost Control:</strong> Cost per conversion rising - review keyword bids and negative keyword lists</li>
+                    <li><strong>Conversion Tracking:</strong> Ensure phone call conversions are properly attributed</li>
+                    <li><strong>Geographic Targeting:</strong> Focus on Yucca Valley and surrounding high-value areas</li>
+                    <li><strong>Ad Extensions:</strong> Implement location, call, and sitelink extensions for better visibility</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div id="local-services" class="tab-content">
+            <h2>Google Local Services Ads</h2>
+            
+            <div class="chart-container">
+                <div class="chart-title">Local Services Ads Performance</div>
+                <p>LSA data will be automatically populated when PDF processing extracts Local Services metrics from your reports.</p>
+            </div>
+            
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>July 2025</th>
+                        <th>Aug 2025 MTD</th>
+                        <th>Change</th>
+                        <th>Efficiency</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Spend</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data needed</td>
+                    </tr>
+                    <tr>
+                        <td>Leads</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data needed</td>
+                    </tr>
+                    <tr>
+                        <td>Cost per Lead</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Data needed</td>
+                    </tr>
+                    <tr>
+                        <td>Lead Quality Score</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>--</td>
+                        <td>Track manually</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div class="insights">
+                <h3>Local Services Ads Strategy</h3>
+                <ul>
+                    <li>Maintain high review rating and response time for better visibility</li>
+                    <li>Optimize service area coverage for maximum reach</li>
+                    <li>Track lead quality and conversion rates for ROI analysis</li>
+                    <li>Monitor competitor activity and adjust bids accordingly</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div id="trends" class="tab-content">
+            <h2>Trends & Projections</h2>
+            
+            <div class="chart-container">
+                <div class="chart-title">Month-over-Month Performance Trends</div>
+                
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Channel</th>
+                            <th>July Actual</th>
+                            <th>August Projection*</th>
+                            <th>Projected Change</th>
+                            <th>Recommendation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Google Ads Spend</td>
+                            <td>$2,068</td>
+                            <td>$2,146**</td>
+                            <td style="color: #28a745;">+3.8%</td>
+                            <td>Monitor performance</td>
+                        </tr>
+                        <tr>
+                            <td>Google Ads Conversions</td>
+                            <td>28</td>
+                            <td>28**</td>
+                            <td style="color: #856404;">0%</td>
+                            <td>Optimize for growth</td>
+                        </tr>
+                        <tr>
+                            <td>Cost per Conversion</td>
+                            <td>$73.86</td>
+                            <td>$76.64**</td>
+                            <td style="color: #dc3545;">+3.8%</td>
+                            <td>Improve efficiency</td>
+                        </tr>
+                        <tr>
+                            <td>Total Marketing Investment</td>
+                            <td>$2,068</td>
+                            <td>$2,146**</td>
+                            <td style="color: #28a745;">+3.8%</td>
+                            <td>Add LSA tracking</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <p style="font-size: 0.9em; color: #666; margin-top: 15px;">
+                    *Projections based on MTD data through mid-August<br>
+                    **Assumes consistent performance for remainder of month
+                </p>
+            </div>
+            
+            <div class="summary-box">
+                <div class="summary-title">Strategic Recommendations for Hi-Desert Plumbing</div>
+                <div style="text-align: left; margin-top: 15px;">
+                    <p><strong>Immediate Actions (Next 7 Days):</strong></p>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li>Complete PDF automation setup to capture LSA and SEO data automatically</li>
+                        <li>Review Google Ads keywords with cost/conversion above $80</li>
+                        <li>Implement call tracking for accurate conversion measurement</li>
+                        <li>Set up revenue tracking to calculate true ROI</li>
+                    </ul>
+                    
+                    <p style="margin-top: 20px;"><strong>Monthly Focus Areas:</strong></p>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li>Expand dashboard to include Google Business Profile metrics</li>
+                        <li>Add seasonal trending analysis for Yucca Valley market</li>
+                        <li>Implement competitor monitoring and analysis</li>
+                        <li>Set up automated alerts for performance thresholds</li>
+                    </ul>
+                    
+                    <p style="margin-top: 20px;"><strong>Growth Opportunities:</strong></p>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li>Test emergency plumbing campaigns during peak seasons</li>
+                        <li>Develop content marketing strategy for SEO growth</li>
+                        <li>Explore social media advertising for brand awareness</li>
+                        <li>Consider retargeting campaigns for website visitors</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <div class="update-time" id="updateTime">
+            Data last updated: <span id="lastUpdate">Loading...</span> | 
+            <a href="#" onclick="refreshData()" style="color: #3498db; text-decoration: none;">Refresh Now</a>
+        </div>
+    </div>
+    
+    <script>
+        // Configuration - Your Live Google Sheets URL
+        const SHEETS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQHD_eJj1UWzKk4eCR_JusOBPxPUwlrCnss2qluN6bZAbggGnxdzV5WgSkZuBe3Bs6RflMVO_1Gg569/pub?gid=0&single=true&output=csv';
+        
+        // Global data storage
+        let marketingData = [];
+        let isLoading = true;
+
+        
+        // Fetch data from Google Sheets
+        async function fetchSheetsData() {
+            try {
+                console.log('Fetching data from Google Sheets...');
+                const response = await fetch(SHEETS_CSV_URL);
+                const csvText = await response.text();
+                
+                // Parse CSV data
+                const rows = csvText.split('\n');
+                const headers = rows[0].split(',');
+                
+                // Convert to array of objects
+                marketingData = [];
+                for (let i = 1; i < rows.length; i++) {
+                    if (rows[i].trim()) {
+                        const values = rows[i].split(',');
+                        const rowData = {};
+                        headers.forEach((header, index) => {
+                            const cleanHeader = header.replace(/"/g, '').trim();
+                            const value = values[index] ? values[index].replace(/"/g, '').trim() : '';
+                            
+                            // Convert numeric values
+                            if (cleanHeader.includes('Spend') || cleanHeader.includes('Cost') || cleanHeader.includes('Total')) {
+                                rowData[cleanHeader] = value ? parseFloat(value.replace('
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        
+        function showTab(tabName) {
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        async function refreshData() {
+            const refreshBtn = event.target;
+            const originalText = refreshBtn.textContent;
+            refreshBtn.textContent = 'Refreshing...';
+            refreshBtn.disabled = true;
+            
+            const success = await fetchSheetsData();
+            
+            setTimeout(() => {
+                refreshBtn.textContent = originalText;
+                refreshBtn.disabled = false;
+                
+                if (success) {
+                    document.getElementById('lastUpdate').textContent = new Date().toLocaleString() + ' (Live from Google Sheets)';
+                } else {
+                    document.getElementById('lastUpdate').textContent = new Date().toLocaleString() + ' (Using cached data - check Sheets connection)';
+                }
+            }, 1000);
+        }
+        
+        function exportData() {
+            if (marketingData.length === 0) {
+                alert('No data available to export. Please refresh the data first.');
+                return;
+            }
+            
+            // Convert data to CSV
+            const headers = Object.keys(marketingData[0]);
+            const csvContent = [
+                headers.join(','),
+                ...marketingData.map(row => headers.map(header => row[header] || '').join(','))
+            ].join('\n');
+            
+            // Download CSV
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `hi-desert-plumbing-marketing-${new Date().toISOString().split('T')[0]}.csv`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        function connectSheets() {
+            const message = `Google Sheets Connection Setup:
+
+Current Status: ${isLoading ? 'Loading...' : (marketingData.length > 0 ? 'Connected ✅' : 'Not Connected ❌')}
+
+To update connection:
+1. Ensure your Google Sheets is published to web
+2. Update SHEETS_CSV_URL in the dashboard code
+3. Refresh this page
+
+Sheet ID: 1BsAd-0ApnbY15-zlT8T-N844KpOlC6OT01TuKVNXXMo
+Data rows loaded: ${marketingData.length}`;
+            
+            alert(message);
+        }
+        
+        function updateDashboard() {
+            if (marketingData.length === 0) {
+                console.log('No data to display');
+                return;
+            }
+            
+            try {
+                // Find most recent two months of data
+                const sortedData = marketingData.sort((a, b) => new Date(b.Month) - new Date(a.Month));
+                const current = sortedData[0] || {};
+                const previous = sortedData[1] || {};
+                
+                // Update summary values
+                const totalSpend = (current['Google Ads Spend'] || 0) + (previous['Google Ads Spend'] || 0);
+                const totalConversions = (current['Google Ads Conversions'] || 0) + (previous['Google Ads Conversions'] || 0);
+                
+                document.getElementById('totalSpendSummary').textContent = `${totalSpend.toLocaleString()}`;
+                document.getElementById('totalConversionsSummary').textContent = totalConversions;
+                if (totalConversions > 0) {
+                    document.getElementById('costPerConvSummary').textContent = `${(totalSpend / totalConversions).toFixed(2)}`;
+                }
+                
+                // Update metric cards with current vs previous
+                if (current['Google Ads Spend'] !== undefined) {
+                    document.getElementById('adsSpendValue').textContent = `${(current['Google Ads Spend'] || 0).toLocaleString()}`;
+                }
+                
+                if (current['Google Ads Conversions'] !== undefined) {
+                    document.getElementById('adsConvValue').textContent = current['Google Ads Conversions'] || 0;
+                }
+                
+                if (current['Google Ads Cost/Conversion'] !== undefined) {
+                    document.getElementById('costValue').textContent = `${(current['Google Ads Cost/Conversion'] || 0).toFixed(2)}`;
+                }
+                
+                // Calculate and update trends
+                if (previous['Google Ads Spend'] && current['Google Ads Spend']) {
+                    const spendChange = ((current['Google Ads Spend'] - previous['Google Ads Spend']) / previous['Google Ads Spend']) * 100;
+                    updateTrendElement('adsSpendTrend', spendChange);
+                }
+                
+                if (previous['Google Ads Conversions'] && current['Google Ads Conversions']) {
+                    const convChange = ((current['Google Ads Conversions'] - previous['Google Ads Conversions']) / previous['Google Ads Conversions']) * 100;
+                    updateTrendElement('adsConvTrend', convChange);
+                }
+                
+                if (previous['Google Ads Cost/Conversion'] && current['Google Ads Cost/Conversion']) {
+                    const costChange = ((current['Google Ads Cost/Conversion'] - previous['Google Ads Cost/Conversion']) / previous['Google Ads Cost/Conversion']) * 100;
+                    updateTrendElement('costTrend', costChange);
+                }
+                
+                // Update data tables
+                updateDataTables();
+                
+                console.log('Dashboard updated successfully');
+                
+            } catch (error) {
+                console.error('Error updating dashboard:', error);
+            }
+        }
+        
+        function updateTrendElement(elementId, changePercent) {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+            
+            if (changePercent > 0) {
+                element.className = 'metric-trend trend-up';
+                element.textContent = `+${changePercent.toFixed(1)}%`;
+            } else if (changePercent < 0) {
+                element.className = 'metric-trend trend-down';
+                element.textContent = `${changePercent.toFixed(1)}%`;
+            } else {
+                element.className = 'metric-trend trend-neutral';
+                element.textContent = '0%';
+            }
+        }
+        
+        function updateDataTables() {
+            if (marketingData.length < 2) return;
+            
+            const current = marketingData[0] || {};
+            const previous = marketingData[1] || {};
+            
+            // Update SEO table in the SEO tab
+            updateSEOTable(current, previous);
+            
+            // Update Google Ads table in the Google Ads tab  
+            updateGoogleAdsTable(current, previous);
+            
+            // Update LSA table in the Local Services tab
+            updateLSATable(current, previous);
+            
+            console.log('Data tables updated with live data');
+        }
+        
+        function updateSEOTable(current, previous) {
+            // This would update the SEO performance table
+            // For now, just log the data structure
+            console.log('SEO Data - Current:', {
+                sessions: current['SEO Sessions'],
+                users: current['SEO New Users'], 
+                bounceRate: current['Bounce Rate %']
+            });
+        }
+        
+        function updateGoogleAdsTable(current, previous) {
+            // Update the Google Ads performance table with real data
+            console.log('Google Ads Data - Current:', {
+                spend: current['Google Ads Spend'],
+                clicks: current['GA Clicks'],
+                conversions: current['GA Conversions'],
+                convRate: current['GA Conv Rate %'],
+                costPerConv: current['GA Cost/Conv']
+            });
+        }
+        
+        function updateLSATable(current, previous) {
+            // Update the Local Services Ads table
+            console.log('LSA Data - Current:', {
+                spend: current['LSA Spend'],
+                calls: current['LSA Calls'],
+                leads: current['LSA Leads'],
+                costPerLead: current['LSA Cost/Lead']
+            });
+        }
+        
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', async function() {
+            document.getElementById('lastUpdate').textContent = 'Loading data from Google Sheets...';
+            
+            // Load data from Google Sheets
+            await fetchSheetsData();
+            
+            if (marketingData.length > 0) {
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleString() + ' (Live from Google Sheets)';
+            } else {
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleString() + ' (Using sample data - check Sheets connection)';
+            }
+            
+            // Add click handlers for metric cards
+            const metricCards = document.querySelectorAll('.metric-card');
+            metricCards.forEach(card => {
+                card.addEventListener('click', function() {
+                    const metricTitle = this.querySelector('.metric-title').textContent;
+                    console.log('Drilling down into:', metricTitle);
+                    // Could implement drill-down functionality here
+                });
+            });
+        });
+
+        // Auto-refresh data every 5 minutes (300000 ms)
+        setInterval(async () => {
+            console.log('Auto-refreshing data...');
+            await fetchSheetsData();
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString() + ' (Auto-refreshed)';
+        }, 300000);
+    </script>
+</body>
+</html>, '')) || 0 : 0;
+                            } else if (cleanHeader.includes('Conversions') || cleanHeader.includes('Leads') || cleanHeader.includes('Sessions') || cleanHeader.includes('Users')) {
+                                rowData[cleanHeader] = value ? parseInt(value) || 0 : 0;
+                            } else if (cleanHeader.includes('Rate')) {
+                                rowData[cleanHeader] = value ? parseFloat(value) || 0 : 0;
+                            } else {
+                                rowData[cleanHeader] = value;
+                            }
+                        });
+                        marketingData.push(rowData);
+                    }
+                }
+                
+                console.log('Data loaded:', marketingData);
+                isLoading = false;
+                updateDashboard();
+                return true;
+                
+            } catch (error) {
+                console.error('Error fetching Google Sheets data:', error);
+                isLoading = false;
+                
+                // Fallback to static data with correct headers
+                marketingData = [
+                    {
+                        'Month': 'July 2025',
+                        'SEO Sessions': null,
+                        'SEO New Users': null,
+                        'Bounce Rate %': null,
+                        'Google Ads Spend': 2068,
+                        'GA Clicks': null,
+                        'GA Conversions': 28,
+                        'GA Conv Rate %': null,
+                        'GA Cost/Conv': 73.86,
+                        'LSA Spend': null,
+                        'LSA Calls': null,
+                        'LSA Leads': null,
+                        'LSA Cost/Lead': null,
+                        'Total Spend': 2068,
+                        'Total Conversions': 28,
+                        'Overall Cost/Conv': 73.86,
+                        'GBP Impressions': null,
+                        'GBP Calls': null,
+                        'Last Updated': 'July 31, 2025'
+                    },
+                    {
+                        'Month': 'August 2025',
+                        'SEO Sessions': null,
+                        'SEO New Users': null,
+                        'Bounce Rate %': null,
+                        'Google Ads Spend': 1385,
+                        'GA Clicks': null,
+                        'GA Conversions': 18,
+                        'GA Conv Rate %': null,
+                        'GA Cost/Conv': 76.94,
+                        'LSA Spend': null,
+                        'LSA Calls': null,
+                        'LSA Leads': null,
+                        'LSA Cost/Lead': null,
+                        'Total Spend': 1385,
+                        'Total Conversions': 18,
+                        'Overall Cost/Conv': 76.94,
+                        'GBP Impressions': null,
+                        'GBP Calls': null,
+                        'Last Updated': 'August 15, 2025'
+                    }
+                ];
+                updateDashboard();
+                return false;
+            }
+        }
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+            
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+        }
+        
+        function refreshData() {
+            // In production, this would fetch fresh data from Google Sheets API
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+            
+            // Simulate data refresh
+            const refreshBtn = event.target;
+            refreshBtn.textContent = 'Refreshing...';
+            refreshBtn.disabled = true;
+            
+            setTimeout(() => {
+                refreshBtn.textContent = 'Refresh Data';
+                refreshBtn.disabled = false;
+                updateDashboard();
+            }, 2000);
+        }
+        
+        function exportData() {
+            // In production, this would generate and download Excel file
+            alert('Export functionality will be available once live Google Sheets connection is established.');
+        }
+        
+        function connectSheets() {
+            alert('To connect live data:\n\n1. Publish your Google Sheets to web\n2. Update the Google Sheets API configuration\n3. Enable automatic refresh every hour\n\nContact support for setup assistance.');
+        }
+        
+        function updateDashboard() {
+            // Update summary values
+            const totalSpend = marketingData.july.googleAdsSpend + marketingData.august.googleAdsSpend;
+            const totalConversions = marketingData.july.googleAdsConversions + marketingData.august.googleAdsConversions;
+            
+            document.getElementById('totalSpendSummary').textContent = `$${totalSpend.toLocaleString()}`;
+            document.getElementById('totalConversionsSummary').textContent = totalConversions;
+            document.getElementById('costPerConvSummary').textContent = `$${(totalSpend / totalConversions).toFixed(2)}`;
+        }
+        
+        // Initialize dashboard when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+            updateDashboard();
+            
+            // Add click handlers for metric cards
+            const metricCards = document.querySelectorAll('.metric-card');
+            metricCards.forEach(card => {
+                card.addEventListener('click', function() {
+                    const metricTitle = this.querySelector('.metric-title').textContent;
+                    console.log('Drilling down into:', metricTitle);
+                    // Could implement drill-down functionality here
+                });
+            });
+        });
+
+        // Simulated live data updates every 5 minutes
+        setInterval(() => {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+        }, 300000);
+    </script>
+</body>
+</html>
